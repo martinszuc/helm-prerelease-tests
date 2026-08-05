@@ -8,35 +8,8 @@ spec:
     - name: SNAPSHOT
       type: string
       description: Konflux application snapshot (auto-injected)
-  workspaces:
-    - name: workspace
   tasks:
-    - name: clone-test-repo
-      taskSpec:
-        results:
-          - name: commit
-            description: Git commit of the test repo
-        workspaces:
-          - name: output
-        steps:
-          - name: clone
-            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
-            script: |
-              #!/usr/bin/env bash
-              set -euo pipefail
-              microdnf install -y git-core tar gzip
-              cd "$(workspaces.output.path)"
-              git clone --depth 1 https://github.com/redhat-developer/helm-prerelease-tests.git tests
-              cd tests
-              echo -n "$(git rev-parse HEAD)" > "$(results.commit.path)"
-              echo "Cloned test repo at $(git rev-parse --short HEAD)"
-      workspaces:
-        - name: output
-          workspace: workspace
-
-    - name: extract-binaries
-      runAfter:
-        - clone-test-repo
+    - name: prerelease-tests
       params:
         - name: SNAPSHOT
           value: $(params.SNAPSHOT)
@@ -45,13 +18,29 @@ spec:
           - name: SNAPSHOT
             type: string
         results:
-          - name: image-ref
-            description: Container image reference extracted from the snapshot
-        workspaces:
-          - name: workspace
+          - name: TEST_OUTPUT
+            description: Test results in Konflux format
+        volumes:
+          - name: shared
+            emptyDir: {}
         steps:
-          - name: extract
+          - name: clone-test-repo
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            volumeMounts:
+              - name: shared
+                mountPath: /shared
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              microdnf install -y git-core tar gzip
+              git clone --depth 1 https://github.com/redhat-developer/helm-prerelease-tests.git /shared/tests
+              echo "Cloned test repo at $(cd /shared/tests && git rev-parse --short HEAD)"
+
+          - name: extract-binaries
             image: registry.redhat.io/openshift4/ose-cli:latest
+            volumeMounts:
+              - name: shared
+                mountPath: /shared
             script: |
               #!/usr/bin/env bash
               set -euo pipefail
@@ -66,36 +55,23 @@ spec:
                 exit 1
               fi
 
-              echo -n "$IMAGE" > "$(results.image-ref.path)"
               echo "Extracting from: ${IMAGE}"
-
-              BINDIR="$(workspaces.workspace.path)/binaries"
-              mkdir -p "$BINDIR"
+              mkdir -p /shared/binaries
 
               oc image extract "$IMAGE" \
-                --path /releases/:"$BINDIR"/ \
+                --path /releases/:/shared/binaries/ \
                 --filter-by-os linux/amd64
 
               echo ""
               echo "Extracted files:"
-              ls -lh "$BINDIR"/
-      workspaces:
-        - name: workspace
-          workspace: workspace
+              ls -lh /shared/binaries/
 
-    - name: run-tests
-      runAfter:
-        - extract-binaries
-      taskSpec:
-        workspaces:
-          - name: workspace
-        results:
-          - name: TEST_OUTPUT
-            description: Test results in Konflux format
-        steps:
-          - name: test
+          - name: run-tests
             image: registry.access.redhat.com/ubi9/ubi:latest
-            workingDir: $(workspaces.workspace.path)/binaries
+            workingDir: /shared/binaries
+            volumeMounts:
+              - name: shared
+                mountPath: /shared
             env:
               - name: HELM_PLATFORM
                 value: linux-amd64
@@ -105,8 +81,8 @@ spec:
               #!/usr/bin/env bash
               set -uo pipefail
 
-              SCRIPTS="$(workspaces.workspace.path)/tests/scripts"
-              RESULTS_DIR="$(workspaces.workspace.path)/test-results"
+              SCRIPTS="/shared/tests/scripts"
+              RESULTS_DIR="/shared/test-results"
               mkdir -p "$RESULTS_DIR"
 
               TOTAL_PASS=0
@@ -175,6 +151,3 @@ spec:
               echo "TEST_OUTPUT: ${RESULT}"
 
               [[ $TOTAL_FAIL -eq 0 ]]
-      workspaces:
-        - name: workspace
-          workspace: workspace
