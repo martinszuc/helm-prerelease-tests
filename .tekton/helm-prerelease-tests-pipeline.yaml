@@ -45,13 +45,19 @@ spec:
               #!/usr/bin/env bash
               set -euo pipefail
 
-              IMAGE=$(echo '$(params.SNAPSHOT)' | jq -r '
-                .components[] | select(.name == "helm-cli") | .containerImage
-              ')
+              IMAGE=$(python3 -c "
+              import json, sys
+              snap = json.loads(sys.argv[1])
+              for c in snap.get('components', []):
+                  if c.get('name') == 'helm-cli':
+                      print(c['containerImage'])
+                      sys.exit(0)
+              print('ERROR: helm-cli component not found', file=sys.stderr)
+              print(json.dumps(snap, indent=2), file=sys.stderr)
+              sys.exit(1)
+              " '$(params.SNAPSHOT)')
 
-              if [[ -z "$IMAGE" || "$IMAGE" == "null" ]]; then
-                echo "ERROR: could not find helm-cli component in snapshot"
-                echo '$(params.SNAPSHOT)' | jq .
+              if [[ -z "$IMAGE" ]]; then
                 exit 1
               fi
 
