@@ -1,0 +1,180 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: helm-prerelease-tests
+spec:
+  params:
+    - name: SNAPSHOT
+      type: string
+      description: Konflux application snapshot (auto-injected)
+  workspaces:
+    - name: workspace
+  tasks:
+    - name: clone-test-repo
+      taskSpec:
+        results:
+          - name: commit
+            description: Git commit of the test repo
+        workspaces:
+          - name: output
+        steps:
+          - name: clone
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              microdnf install -y git-core tar gzip
+              cd "$(workspaces.output.path)"
+              git clone --depth 1 https://github.com/redhat-developer/helm-prerelease-tests.git tests
+              cd tests
+              echo -n "$(git rev-parse HEAD)" > "$(results.commit.path)"
+              echo "Cloned test repo at $(git rev-parse --short HEAD)"
+      workspaces:
+        - name: output
+          workspace: workspace
+
+    - name: extract-binaries
+      runAfter:
+        - clone-test-repo
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+            type: string
+        results:
+          - name: image-ref
+            description: Container image reference extracted from the snapshot
+        workspaces:
+          - name: workspace
+        steps:
+          - name: extract
+            image: registry.redhat.io/openshift4/ose-cli:latest
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              IMAGE=$(echo '$(params.SNAPSHOT)' | jq -r '
+                .components[] | select(.name == "helm-cli") | .containerImage
+              ')
+
+              if [[ -z "$IMAGE" || "$IMAGE" == "null" ]]; then
+                echo "ERROR: could not find helm-cli component in snapshot"
+                echo '$(params.SNAPSHOT)' | jq .
+                exit 1
+              fi
+
+              echo -n "$IMAGE" > "$(results.image-ref.path)"
+              echo "Extracting from: ${IMAGE}"
+
+              BINDIR="$(workspaces.workspace.path)/binaries"
+              mkdir -p "$BINDIR"
+
+              oc image extract "$IMAGE" \
+                --path /releases/:"$BINDIR"/ \
+                --filter-by-os linux/amd64
+
+              echo ""
+              echo "Extracted files:"
+              ls -lh "$BINDIR"/
+      workspaces:
+        - name: workspace
+          workspace: workspace
+
+    - name: run-tests
+      runAfter:
+        - extract-binaries
+      taskSpec:
+        workspaces:
+          - name: workspace
+        results:
+          - name: TEST_OUTPUT
+            description: Test results in Konflux format
+        steps:
+          - name: test
+            image: registry.access.redhat.com/ubi9/ubi:latest
+            workingDir: $(workspaces.workspace.path)/binaries
+            env:
+              - name: HELM_PLATFORM
+                value: linux-amd64
+              - name: VERBOSE
+                value: "1"
+            script: |
+              #!/usr/bin/env bash
+              set -uo pipefail
+
+              SCRIPTS="$(workspaces.workspace.path)/tests/scripts"
+              RESULTS_DIR="$(workspaces.workspace.path)/test-results"
+              mkdir -p "$RESULTS_DIR"
+
+              TOTAL_PASS=0
+              TOTAL_FAIL=0
+              TOTAL_SKIP=0
+              FAILED_SUITES=()
+
+              for script in \
+                "$SCRIPTS"/01-validation.sh \
+                "$SCRIPTS"/02-smoke.sh \
+                "$SCRIPTS"/03-dependencies.sh \
+                "$SCRIPTS"/04-functionality-offline.sh \
+                "$SCRIPTS"/05-functionality-cluster.sh \
+                "$SCRIPTS"/06-oci.sh \
+                "$SCRIPTS"/07-v4-features-offline.sh \
+                "$SCRIPTS"/08-v4-features-cluster.sh \
+                "$SCRIPTS"/09-distribution.sh; do
+
+                suite="$(basename "$script" .sh)"
+                echo ""
+                echo "================================================================"
+                echo "Running: ${suite}"
+                echo "================================================================"
+
+                bash "$script" 2>&1 | tee "$RESULTS_DIR/${suite}.log"
+                rc=${PIPESTATUS[0]}
+
+                totals=$(grep -E '^TOTAL:' "$RESULTS_DIR/${suite}.log" || true)
+                if [[ -n "$totals" ]]; then
+                  p=$(echo "$totals" | grep -oP 'PASS: \K[0-9]+' || echo 0)
+                  f=$(echo "$totals" | grep -oP 'FAIL: \K[0-9]+' || echo 0)
+                  s=$(echo "$totals" | grep -oP 'SKIP: \K[0-9]+' || echo 0)
+                  TOTAL_PASS=$((TOTAL_PASS + p))
+                  TOTAL_FAIL=$((TOTAL_FAIL + f))
+                  TOTAL_SKIP=$((TOTAL_SKIP + s))
+                fi
+
+                if [[ $rc -ne 0 ]]; then
+                  FAILED_SUITES+=("$suite")
+                fi
+              done
+
+              echo ""
+              echo "================================================================"
+              echo "OVERALL RESULTS"
+              echo "================================================================"
+              echo "PASS: ${TOTAL_PASS}  FAIL: ${TOTAL_FAIL}  SKIP: ${TOTAL_SKIP}"
+              if [[ ${#FAILED_SUITES[@]} -gt 0 ]]; then
+                echo "FAILED SUITES:"
+                for s in "${FAILED_SUITES[@]}"; do
+                  echo "  - ${s}"
+                done
+              fi
+
+              if [[ $TOTAL_FAIL -eq 0 ]]; then
+                RESULT="SUCCESS"
+              else
+                RESULT="FAILURE"
+              fi
+
+              printf '{"result":"%s","successes":%d,"failures":%d,"warnings":0}' \
+                "$RESULT" "$TOTAL_PASS" "$TOTAL_FAIL" \
+                > "$(results.TEST_OUTPUT.path)"
+
+              echo ""
+              echo "TEST_OUTPUT: ${RESULT}"
+
+              [[ $TOTAL_FAIL -eq 0 ]]
+      workspaces:
+        - name: workspace
+          workspace: workspace
