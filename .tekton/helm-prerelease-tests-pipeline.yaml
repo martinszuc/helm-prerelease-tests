@@ -145,13 +145,15 @@ spec:
 
               if [[ $TOTAL_FAIL -eq 0 ]]; then
                 RESULT="SUCCESS"
+                NOTE="All suites passed (${TOTAL_PASS} tests, ${TOTAL_SKIP} skipped)"
               else
+                NOTE="Failed suites: $(IFS=', '; echo "${FAILED_SUITES[*]}")"
                 RESULT="FAILURE"
               fi
 
               TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-              printf '{"result":"%s","timestamp":"%s","successes":%d,"failures":%d,"warnings":0}' \
-                "$RESULT" "$TIMESTAMP" "$TOTAL_PASS" "$TOTAL_FAIL" \
+              printf '{"result":"%s","timestamp":"%s","successes":%d,"failures":%d,"warnings":0,"note":"%s"}' \
+                "$RESULT" "$TIMESTAMP" "$TOTAL_PASS" "$TOTAL_FAIL" "$NOTE" \
                 > "$(results.TEST_OUTPUT.path)"
 
               echo ""
