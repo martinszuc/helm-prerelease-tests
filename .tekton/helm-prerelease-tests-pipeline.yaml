@@ -149,8 +149,9 @@ spec:
                 RESULT="FAILURE"
               fi
 
-              printf '{"result":"%s","successes":%d,"failures":%d,"warnings":0}' \
-                "$RESULT" "$TOTAL_PASS" "$TOTAL_FAIL" \
+              TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              printf '{"result":"%s","timestamp":"%s","successes":%d,"failures":%d,"warnings":0}' \
+                "$RESULT" "$TIMESTAMP" "$TOTAL_PASS" "$TOTAL_FAIL" \
                 > "$(results.TEST_OUTPUT.path)"
 
               echo ""
