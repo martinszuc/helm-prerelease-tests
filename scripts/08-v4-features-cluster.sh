@@ -10,6 +10,7 @@ echo ""
 
 if ! has_cluster; then
     skip_all "no cluster available"
+    summary
     exit 0
 fi
 
