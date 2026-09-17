@@ -11,6 +11,13 @@ roles:
     - fix
     - retro
     - prioritize
+agents:
+    - name: triage
+      model: claude-haiku-4-6
+    - name: retro
+      model: claude-haiku-4-6
+    - name: prioritize
+      model: claude-haiku-4-6
 allowed_remote_resources:
     - https://raw.githubusercontent.com/fullsend-ai/fullsend/
     - https://raw.githubusercontent.com/fullsend-ai/agents/
